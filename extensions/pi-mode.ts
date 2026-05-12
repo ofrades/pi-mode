@@ -23,7 +23,6 @@ import {
   persistConfig,
   readCostLog,
   readTurnLog,
-  resolveRouteState,
   setStatus,
   summarizeCosts,
   supportedThinkingLevels,
@@ -31,7 +30,6 @@ import {
   type Config,
   type CostEntry,
   type ModeName,
-  type RouteName,
   type TurnEntry,
 } from "../src/mode-core.ts";
 
@@ -88,12 +86,11 @@ async function showModeSelector(
 
   while (true) {
     const result = await ctx.ui.custom<{
-      action: "confirm" | "thinking" | "model" | "routing" | "cancel";
+      action: "confirm" | "thinking" | "model" | "cancel";
       modeName: ModeName;
     }>((tui, theme, _kb, done) => ({
       render(_width: number) {
-        const routing = config.routing?.enabled ? "on" : "off";
-        const lines: string[] = [theme.fg("accent", theme.bold(`Mode · routing:${routing}`))];
+        const lines: string[] = [theme.fg("accent", theme.bold("Mode"))];
         for (const [index, name] of MODE_ORDER.entries()) {
           const line = `${index === selectedIndex ? "→ " : "  "}${modeLine(ctx, config, name)}${
             name === config.activeMode ? " [active]" : ""
@@ -103,7 +100,7 @@ async function showModeSelector(
         lines.push(
           theme.fg(
             "dim",
-            "↑↓/j/k choose • Enter apply • t thinking • c model • r routing • Esc cancel",
+            "↑↓/j/k choose • Enter apply • t thinking • c model • Esc cancel",
           ),
         );
         return lines;
@@ -114,7 +111,6 @@ async function showModeSelector(
         if (data === "\r" || data === "\n") done({ action: "confirm", modeName });
         else if (data === "t" || data === "T") done({ action: "thinking", modeName });
         else if (data === "c" || data === "C") done({ action: "model", modeName });
-        else if (data === "r" || data === "R") done({ action: "routing", modeName });
         else if (data === "\u001b[A" || data === "k") {
           selectedIndex = (selectedIndex - 1 + MODE_ORDER.length) % MODE_ORDER.length;
           tui.requestRender();
@@ -130,12 +126,7 @@ async function showModeSelector(
     if (!result || result.action === "cancel") return;
     selectedIndex = MODE_ORDER.indexOf(result.modeName);
 
-    if (result.action === "routing") {
-      config.routing ??= {};
-      config.routing.enabled = !(config.routing.enabled ?? true);
-      persistConfig(ctx, config);
-      notify(ctx, `Task routing ${config.routing.enabled ? "enabled" : "disabled"}`, "info");
-    } else if (result.action === "thinking") {
+    if (result.action === "thinking") {
       const level = await pickThinkingLevel(ctx, config, result.modeName);
       if (level) {
         config.modes ??= {};
@@ -166,7 +157,6 @@ export default function modeExtension(pi: ExtensionAPI) {
   let sessionStart = Date.now();
   let turnSeq = 0;
   const assistantStarts: number[] = [];
-  const routeMismatchWarnings = new Set<string>();
   const sessionEntries: CostEntry[] = [];
 
   function currentSessionEntries(): CostEntry[] {
@@ -191,14 +181,10 @@ export default function modeExtension(pi: ExtensionAPI) {
     updateModeStatus(ctx);
   });
 
-  const routeStack: (RouteName | undefined)[] = [];
-
   pi.on("message_start", async (event) => {
     const message = event.message as any;
     if (message.role === "assistant") {
       assistantStarts.push(Date.now());
-      const currentConfig = loadConfig();
-      routeStack.push(currentConfig.routing?.activeRoute);
     }
   });
 
@@ -206,7 +192,6 @@ export default function modeExtension(pi: ExtensionAPI) {
     const message = event.message as any;
     if (message.role !== "assistant" || !message.usage) return;
     const start = assistantStarts.shift() ?? message.timestamp ?? Date.now();
-    const route = routeStack.shift();
 
     const currentConfig = loadConfig();
     const entry: CostEntry = {
@@ -222,34 +207,16 @@ export default function modeExtension(pi: ExtensionAPI) {
     sessionEntries.push(entry);
     appendCostEntry(entry);
 
-    if (route) {
-      const expected = resolveRouteState(currentConfig, route);
-      const mismatch =
-        expected.provider &&
-        expected.model &&
-        (entry.provider !== expected.provider || entry.model !== expected.model);
-      const warningKey = `${route}:${expected.provider}/${expected.model}->${entry.provider}/${entry.model}`;
-      if (mismatch && !routeMismatchWarnings.has(warningKey)) {
-        routeMismatchWarnings.add(warningKey);
-        notify(
-          ctx,
-          `Route "${route}" was active, but the assistant response used ${entry.provider}/${entry.model} instead of ${expected.provider}/${expected.model}. The model switch may not have taken effect for that turn.`,
-          "warning",
-        );
-      }
-    }
-
     const turn: TurnEntry = {
       turnId: message.id ?? `${entry.timestamp}-${++turnSeq}`,
       timestamp: entry.timestamp,
       provider: entry.provider,
       model: entry.model,
-      route,
       thinkingLevel: pi.getThinkingLevel(),
       promptTokens: entry.inputTokens,
       completionTokens: entry.outputTokens,
       durationMs: Math.max(0, Date.now() - start),
-      autoRouted: Boolean(route),
+      autoRouted: false,
       cost: entry.cost,
     };
     appendTurnEntry(ctx.cwd, turn);
@@ -275,20 +242,15 @@ export default function modeExtension(pi: ExtensionAPI) {
     description: "Select or configure rush/smart/deep mode",
     getArgumentCompletions: (prefix) => {
       const trimmed = prefix.trimStart();
-      const [first = "", second = ""] = trimmed.split(/\s+/);
+      const [first = ""] = trimmed.split(/\s+/);
+
       if (first === "log" && /\s/.test(trimmed)) {
         return ["5", "10", "25", "50"]
-          .filter((value) => value.startsWith(second))
+          .filter((value) => value.startsWith(first))
           .map((value) => ({ value: `log ${value}`, label: value }));
       }
 
-      if (first === "routing" && /\s/.test(trimmed)) {
-        return ["on", "off"]
-          .filter((value) => value.startsWith(second))
-          .map((value) => ({ value: `routing ${value}`, label: value }));
-      }
-
-      return [...MODE_ORDER, "routing", "cost", "log"]
+      return [...MODE_ORDER, "cost", "log"]
         .filter((name) => name.startsWith(first))
         .map((name) => ({ value: name, label: name }));
     },
@@ -316,21 +278,11 @@ export default function modeExtension(pi: ExtensionAPI) {
         return;
       }
 
-      if (firstArg === "routing") {
-        config.routing ??= {};
-        if (secondArg === "on") config.routing.enabled = true;
-        else if (secondArg === "off") config.routing.enabled = false;
-        else config.routing.enabled = !(config.routing.enabled ?? true);
-        persistConfig(ctx, config);
-        notify(ctx, `Task routing ${config.routing.enabled ? "enabled" : "disabled"}`, "info");
-        return;
-      }
-
       if (firstArg) {
         if (!isModeName(firstArg)) {
           notify(
             ctx,
-            `Unknown mode "${firstArg}". Use: ${MODE_ORDER.join(", ")}, routing [on|off], cost, or log [N].`,
+            `Unknown mode "${firstArg}". Use: ${MODE_ORDER.join(", ")}, cost, or log [N].`,
             "error",
           );
           return;

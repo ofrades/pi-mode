@@ -5,7 +5,6 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export type ModeName = "rush" | "smart" | "deep";
-export type RouteName = "vision" | "handoff" | "search" | "review" | "oracle" | "librarian";
 
 export type ModeState = {
   provider?: string;
@@ -13,14 +12,9 @@ export type ModeState = {
   thinkingLevel?: ModelThinkingLevel;
 };
 
-export type RouteState = ModeState & {
-  description?: string;
-  restore?: boolean;
-};
-
 export type CostEntry = {
   timestamp: number;
-  mode: ModeName | RouteName | string;
+  mode: ModeName | string;
   provider: string;
   model: string;
   inputTokens: number;
@@ -34,7 +28,6 @@ export type TurnEntry = {
   timestamp: number;
   provider: string;
   model: string;
-  route?: RouteName;
   thinkingLevel: ModelThinkingLevel;
   promptTokens: number;
   completionTokens: number;
@@ -46,60 +39,13 @@ export type TurnEntry = {
 export type Config = {
   activeMode?: ModeName;
   modes?: Partial<Record<ModeName, Partial<ModeState>>>;
-  routing?: {
-    enabled?: boolean;
-    activeRoute?: RouteName;
-    previous?: ModeState;
-    routes?: Partial<Record<RouteName, Partial<RouteState>>>;
-  };
 };
 
 export const MODE_ORDER: ModeName[] = ["rush", "smart", "deep"];
-export const ROUTE_ORDER: RouteName[] = ["vision", "handoff", "search", "review", "oracle", "librarian"];
 
 export function isModeName(value: string): value is ModeName {
   return (MODE_ORDER as readonly string[]).includes(value);
 }
-
-export function isRouteName(value: string): value is RouteName {
-  return (ROUTE_ORDER as readonly string[]).includes(value);
-}
-
-const ROUTE_METADATA: Record<
-  RouteName,
-  { description: string; recommendedModel: string; restore: boolean }
-> = {
-  vision: {
-    description: "Image and screenshot understanding; use when prompts include image paths or image reads.",
-    recommendedModel: "Gemini 3 Flash",
-    restore: true,
-  },
-  handoff: {
-    description: "Compact context transfer and continuation prompts.",
-    recommendedModel: "Gemini 3 Flash",
-    restore: true,
-  },
-  search: {
-    description: "Fast retrieval-oriented codebase search and context gathering.",
-    recommendedModel: "Gemini 3 Flash",
-    restore: true,
-  },
-  review: {
-    description: "Code review, bug finding, regression/security/maintainability checks.",
-    recommendedModel: "Gemini 3.1 Pro",
-    restore: true,
-  },
-  oracle: {
-    description: "Complex reasoning, planning, consistency checks, and architectural tradeoffs.",
-    recommendedModel: "GPT-5.4",
-    restore: true,
-  },
-  librarian: {
-    description: "External docs, dependencies, APIs, and unfamiliar library research.",
-    recommendedModel: "Claude Sonnet 4.6",
-    restore: true,
-  },
-};
 
 const THINKING_LEVELS_DESC: ModelThinkingLevel[] = [
   "xhigh",
@@ -135,7 +81,8 @@ function saveConfig(config: Config) {
     throw new Error(`Refusing to overwrite unreadable settings.json: ${settingsReadError}`);
   }
 
-  settings.mode = config;
+  const existing = (settings.mode ?? {}) as Config;
+  settings.mode = { ...existing, activeMode: config.activeMode, modes: config.modes };
   delete settings.modelMode;
   writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`);
 }
@@ -157,7 +104,7 @@ export function costLabel(cost: number): string {
 }
 
 export function activeCostBucket(config: Config, model: { provider: string; id: string } | undefined): string {
-  return config.routing?.activeRoute ?? config.activeMode ?? modeForModel(config, model) ?? "custom";
+  return config.activeMode ?? modeForModel(config, model) ?? "custom";
 }
 
 export function appendCostEntry(entry: CostEntry): void {
@@ -198,8 +145,7 @@ export function formatTurnLog(entries: TurnEntry[]): string {
   return entries
     .map((entry) => {
       const time = new Date(entry.timestamp).toLocaleTimeString();
-      const route = entry.route ? ` route:${entry.route}` : "";
-      return `${time} ${entry.provider}/${entry.model}${route} thinking:${entry.thinkingLevel} ${costLabel(entry.cost)} (${entry.promptTokens}→${entry.completionTokens}, ${entry.durationMs}ms)`;
+      return `${time} ${entry.provider}/${entry.model} thinking:${entry.thinkingLevel} ${costLabel(entry.cost)} (${entry.promptTokens}→${entry.completionTokens}, ${entry.durationMs}ms)`;
     })
     .join("\n");
 }
@@ -303,19 +249,6 @@ export function modeLine(ctx: ExtensionContext, config: Config, modeName: ModeNa
   return `${modeName} — ${modelLabel} · thinking:${defaultThinkingLevel(ctx, config, modeName)}`;
 }
 
-export function resolveRouteState(config: Config, routeName: RouteName): RouteState {
-  const meta = ROUTE_METADATA[routeName];
-  const route = config.routing?.routes?.[routeName];
-  return {
-    provider: route?.provider,
-    model: route?.model,
-    thinkingLevel: route?.thinkingLevel,
-    description:
-      route?.description ?? `${meta.description} Recommended model: ${meta.recommendedModel}.`,
-    restore: route?.restore ?? meta.restore,
-  };
-}
-
 function ensureModeDefaults(ctx: ExtensionContext, config: Config) {
   if (config.activeMode && !isModeName(config.activeMode)) delete config.activeMode;
 
@@ -330,22 +263,6 @@ function ensureModeDefaults(ctx: ExtensionContext, config: Config) {
   }
 
   config.activeMode ??= modeForModel(config, ctx.model) ?? "smart";
-  config.routing ??= {};
-  if (config.routing.activeRoute && !isRouteName(config.routing.activeRoute)) {
-    delete config.routing.activeRoute;
-  }
-
-  config.routing.enabled ??= false;
-  config.routing.routes ??= {};
-  for (const routeName of ROUTE_ORDER) {
-    const existing = config.routing.routes[routeName] ?? {};
-    const resolved = resolveRouteState(config, routeName);
-    config.routing.routes[routeName] = {
-      ...existing,
-      description: resolved.description,
-      restore: resolved.restore,
-    };
-  }
 }
 
 export function withConfig(ctx: ExtensionContext): Config {
@@ -380,68 +297,8 @@ export async function applyMode(
 
   pi.setThinkingLevel(defaultThinkingLevel(ctx, config, modeName));
   config.activeMode = modeName;
-  delete config.routing?.activeRoute;
-  delete config.routing?.previous;
   persistConfig(ctx, config);
   setStatus(ctx, "mode", `mode:${modeName}`);
-  setStatus(ctx, "route", undefined);
   notify(ctx, `Mode: ${modeLine(ctx, config, modeName)}`, "info");
   return true;
-}
-
-export async function applyRoute(
-  ctx: ExtensionContext,
-  pi: ExtensionAPI,
-  config: Config,
-  routeName: RouteName,
-): Promise<boolean> {
-  if (config.routing?.enabled === false) return false;
-  const state = resolveRouteState(config, routeName);
-  if (!state.provider || !state.model) return false;
-  const model = ctx.modelRegistry.find(state.provider, state.model);
-  if (!model) return false;
-
-  config.routing ??= {};
-  if (ctx.model && !config.routing.previous) {
-    config.routing.previous = {
-      provider: ctx.model.provider,
-      model: ctx.model.id,
-      thinkingLevel: pi.getThinkingLevel(),
-    };
-  }
-
-  if (!(await pi.setModel(model))) return false;
-  pi.setThinkingLevel(state.thinkingLevel ?? highestThinkingLevel(model));
-  config.routing.activeRoute = routeName;
-  persistConfig(ctx, config);
-  setStatus(ctx, "route", `route:${routeName}`);
-  return true;
-}
-
-export async function restoreRoute(
-  ctx: ExtensionContext,
-  pi: ExtensionAPI,
-  config: Config,
-): Promise<boolean> {
-  const prev = config.routing?.previous;
-  if (prev?.provider && prev.model) {
-    const model = ctx.modelRegistry.find(prev.provider, prev.model);
-    if (model && (await pi.setModel(model))) {
-      pi.setThinkingLevel(prev.thinkingLevel ?? highestThinkingLevel(model));
-      delete config.routing?.activeRoute;
-      delete config.routing?.previous;
-      persistConfig(ctx, config);
-      setStatus(ctx, "route", undefined);
-      return true;
-    }
-  }
-
-  const ok = await applyMode(
-    ctx,
-    pi,
-    config,
-    config.activeMode ?? modeForModel(config, ctx.model) ?? "smart",
-  );
-  if (ok) setStatus(ctx, "route", undefined);
-  return ok;
 }

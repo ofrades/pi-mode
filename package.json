@@ -2,14 +2,13 @@
   "name": "pi-mode",
   "version": "1.0.0",
   "type": "module",
-  "description": "Model mode switching and task-aware routing for pi — split into pi-mode and pi-routing extension modules.",
+  "description": "Rush/smart/deep model mode switching for pi.",
   "keywords": [
     "pi-package",
     "pi",
     "pi-extension",
     "mode",
     "model-switching",
-    "routing",
     "coding-agent"
   ],
   "license": "MIT",
@@ -30,8 +29,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pi-mode.ts",
-      "./extensions/pi-routing.ts"
+      "./extensions/pi-mode.ts"
     ]
   },
   "files": [
