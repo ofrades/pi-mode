@@ -1,0 +1,45 @@
+{
+  "name": "pi-mode",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Model mode switching and task-aware routing for pi — rush, smart, deep modes with vision, handoff, search, review, oracle, and librarian routes.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "mode",
+    "model-switching",
+    "routing",
+    "coding-agent"
+  ],
+  "license": "MIT",
+  "author": "ofrades",
+  "homepage": "https://github.com/ofrades/pi-mode#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ofrades/pi-mode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ofrades/pi-mode/issues"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  }
+}
