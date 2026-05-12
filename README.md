@@ -1,6 +1,6 @@
 # pi-mode
 
-Rush/smart/deep model mode switching for [Pi](https://github.com/badlogic/pi-mono).
+[Amp](https://ampcode.com/models) style Rush/smart/deep model mode switching for [Pi](https://github.com/badlogic/pi-mono).
 
 ## Installation
 
@@ -14,9 +14,9 @@ pi install git:github.com/ofrades/pi-mode
 
 | Mode | Intent |
 |------|--------|
-| `rush` | Fast, cheap model for quick lookups and boilerplate |
-| `smart` | Default balanced model |
-| `deep` | Slow, expensive model for hard problems |
+| `rush` | Faster and cheaper, for small, well-defined tasks |
+| `smart` | Unconstrained state-of-the-art model use |
+| `deep` | Deep reasoning with extended thinking |
 
 Each mode stores a `provider`, `model`, and `thinkingLevel`. Cycling with `Ctrl+Shift+M` steps through them in order.
 
@@ -56,9 +56,9 @@ Config is stored in `settings.json` under the agent directory:
   "mode": {
     "activeMode": "smart",
     "modes": {
-      "rush":  { "provider": "google",    "model": "gemini-2.0-flash",   "thinkingLevel": "off" },
-      "smart": { "provider": "anthropic", "model": "claude-sonnet-4-6",  "thinkingLevel": "low" },
-      "deep":  { "provider": "openai",    "model": "o3",                 "thinkingLevel": "high" }
+      "rush":  { "provider": "anthropic",    "model": "claude-haiku-4.5",   "thinkingLevel": "medium" },
+      "smart": { "provider": "anthropic", "model": "claude-opus-4.7",  "thinkingLevel": "high" },
+      "deep":  { "provider": "openai",    "model": "gpt-5.5",                 "thinkingLevel": "medium" }
     }
   }
 }
