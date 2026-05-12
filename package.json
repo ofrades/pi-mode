@@ -2,7 +2,7 @@
   "name": "pi-mode",
   "version": "1.0.0",
   "type": "module",
-  "description": "Model mode switching and task-aware routing for pi — rush, smart, deep modes with vision, handoff, search, review, oracle, and librarian routes.",
+  "description": "Model mode switching and task-aware routing for pi — split into pi-mode and pi-routing extension modules.",
   "keywords": [
     "pi-package",
     "pi",
@@ -27,11 +27,13 @@
   },
   "pi": {
     "extensions": [
-      "./extensions"
+      "./extensions/pi-mode.ts",
+      "./extensions/pi-routing.ts"
     ]
   },
   "files": [
     "extensions",
+    "src",
     "README.md",
     "LICENSE",
     "package.json"

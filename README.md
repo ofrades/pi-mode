@@ -1,6 +1,11 @@
-# mode-extension
+# pi-mode
 
-A Pi coding agent extension that adds **model mode switching** and **task-aware routing** — letting you assign different models to different kinds of work and switch between them with a keystroke or a slash command.
+A Pi coding agent package with two extension modules:
+
+- **pi-mode** — rush/smart/deep model mode switching
+- **pi-routing** — task-aware model routing for vision, handoff, search, review, oracle, and librarian tasks
+
+Together they let you assign different models to different kinds of work and switch between them with a keystroke, a slash command, or task-aware tools.
 
 ## Installation
 
@@ -42,7 +47,7 @@ Each mode stores a `provider`, `model`, and `thinkingLevel`. Cycling with `Ctrl+
 
 | Route | When to use |
 |-------|-------------|
-| `vision` | Images, screenshots, `/tmp/pi-clipboard` paths, PDFs |
+| `vision` | Images and screenshots |
 | `handoff` | Context compaction and continuation prompts |
 | `search` | Fast codebase retrieval and context gathering |
 | `review` | Code review, security checks, regression analysis |
