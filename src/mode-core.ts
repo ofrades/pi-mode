@@ -81,9 +81,7 @@ function saveConfig(config: Config) {
     throw new Error(`Refusing to overwrite unreadable settings.json: ${settingsReadError}`);
   }
 
-  const existing = (settings.mode ?? {}) as Config;
-  settings.mode = { ...existing, activeMode: config.activeMode, modes: config.modes };
-  delete settings.modelMode;
+  settings.mode = config;
   writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
@@ -187,7 +185,7 @@ export function summarizeCosts(entries: CostEntry[]): string {
 
 export function loadConfig(): Config {
   const settings = readSettings();
-  const config = settings.mode ?? settings.modelMode;
+  const config = settings.mode;
   return config && typeof config === "object" ? (config as Config) : {};
 }
 
