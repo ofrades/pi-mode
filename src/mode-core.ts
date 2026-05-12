@@ -1,5 +1,5 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -16,6 +16,31 @@ export type ModeState = {
 export type RouteState = ModeState & {
   description?: string;
   restore?: boolean;
+};
+
+export type CostEntry = {
+  timestamp: number;
+  mode: ModeName | RouteName | string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  thinkingTokens?: number;
+  cost: number;
+};
+
+export type TurnEntry = {
+  turnId: string;
+  timestamp: number;
+  provider: string;
+  model: string;
+  route?: RouteName;
+  thinkingLevel: ModelThinkingLevel;
+  promptTokens: number;
+  completionTokens: number;
+  durationMs: number;
+  autoRouted: boolean;
+  cost: number;
 };
 
 export type Config = {
@@ -86,6 +111,7 @@ const THINKING_LEVELS_DESC: ModelThinkingLevel[] = [
 ];
 
 const SETTINGS_PATH = join(getAgentDir(), "settings.json");
+export const COST_LOG_PATH = join(getAgentDir(), "cost-log.jsonl");
 
 let settingsReadError: string | undefined;
 
@@ -126,6 +152,93 @@ export function setStatus(ctx: ExtensionContext, key: string, value: string | un
   if (ctx.hasUI) ctx.ui.setStatus(key, value);
 }
 
+export function costLabel(cost: number): string {
+  return cost < 0.01 && cost > 0 ? `$${cost.toFixed(4)}` : `$${cost.toFixed(2)}`;
+}
+
+export function activeCostBucket(config: Config, model: { provider: string; id: string } | undefined): string {
+  return config.routing?.activeRoute ?? config.activeMode ?? modeForModel(config, model) ?? "custom";
+}
+
+export function appendCostEntry(entry: CostEntry): void {
+  mkdirSync(dirname(COST_LOG_PATH), { recursive: true });
+  appendFileSync(COST_LOG_PATH, `${JSON.stringify(entry)}\n`);
+}
+
+function jsonlDate(timestamp = Date.now()): string {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+export function turnLogPath(cwd: string, timestamp = Date.now()): string {
+  return join(cwd, ".pi-agent", `session-${jsonlDate(timestamp)}.jsonl`);
+}
+
+export function appendTurnEntry(cwd: string, entry: TurnEntry): void {
+  const path = turnLogPath(cwd, entry.timestamp);
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, `${JSON.stringify(entry)}\n`);
+}
+
+export function readTurnLog(cwd: string, timestamp = Date.now()): TurnEntry[] {
+  const path = turnLogPath(cwd, timestamp);
+  if (!existsSync(path)) return [];
+  return readFileSync(path, "utf8")
+    .split(/\n+/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as TurnEntry];
+      } catch {
+        return [];
+      }
+    });
+}
+
+export function formatTurnLog(entries: TurnEntry[]): string {
+  return entries
+    .map((entry) => {
+      const time = new Date(entry.timestamp).toLocaleTimeString();
+      const route = entry.route ? ` route:${entry.route}` : "";
+      return `${time} ${entry.provider}/${entry.model}${route} thinking:${entry.thinkingLevel} ${costLabel(entry.cost)} (${entry.promptTokens}→${entry.completionTokens}, ${entry.durationMs}ms)`;
+    })
+    .join("\n");
+}
+
+export function readCostLog(): CostEntry[] {
+  if (!existsSync(COST_LOG_PATH)) return [];
+  return readFileSync(COST_LOG_PATH, "utf8")
+    .split(/\n+/)
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        return [JSON.parse(line) as CostEntry];
+      } catch {
+        return [];
+      }
+    });
+}
+
+export function summarizeCosts(entries: CostEntry[]): string {
+  const groups = new Map<string, { cost: number; input: number; output: number; count: number }>();
+  for (const entry of entries) {
+    const key = `${entry.mode} · ${entry.provider}/${entry.model}`;
+    const group = groups.get(key) ?? { cost: 0, input: 0, output: 0, count: 0 };
+    group.cost += entry.cost;
+    group.input += entry.inputTokens;
+    group.output += entry.outputTokens;
+    group.count += 1;
+    groups.set(key, group);
+  }
+
+  return [...groups.entries()]
+    .sort((a, b) => b[1].cost - a[1].cost)
+    .map(
+      ([key, group]) =>
+        `${key}: ${costLabel(group.cost)} (${group.input} in, ${group.output} out, ${group.count} calls)`,
+    )
+    .join("\n");
+}
+
 export function loadConfig(): Config {
   const settings = readSettings();
   const config = settings.mode ?? settings.modelMode;
@@ -140,6 +253,10 @@ export function persistConfig(ctx: ExtensionContext, config: Config): boolean {
     notify(ctx, `Could not save mode settings: ${formatError(error)}`, "error");
     return false;
   }
+}
+
+function findConfiguredModel(ctx: ExtensionContext, state: Partial<ModeState> | undefined) {
+  return state?.provider && state.model ? ctx.modelRegistry.find(state.provider, state.model) : undefined;
 }
 
 export function supportedThinkingLevels(model: unknown): ModelThinkingLevel[] {
@@ -166,7 +283,7 @@ export function defaultThinkingLevel(
 ): ModelThinkingLevel {
   const state = config.modes?.[modeName];
   if (state?.thinkingLevel) return state.thinkingLevel;
-  return highestThinkingLevel(ctx.modelRegistry.find(state?.provider, state?.model));
+  return highestThinkingLevel(findConfiguredModel(ctx, state));
 }
 
 export function modeForModel(
@@ -251,7 +368,7 @@ export async function applyMode(
   modeName: ModeName,
 ): Promise<boolean> {
   const state = config.modes?.[modeName];
-  const model = ctx.modelRegistry.find(state?.provider, state?.model);
+  const model = findConfiguredModel(ctx, state);
   if (!model) {
     notify(ctx, `Model not found: ${state?.provider}/${state?.model}`, "error");
     return false;
@@ -280,6 +397,7 @@ export async function applyRoute(
 ): Promise<boolean> {
   if (config.routing?.enabled === false) return false;
   const state = resolveRouteState(config, routeName);
+  if (!state.provider || !state.model) return false;
   const model = ctx.modelRegistry.find(state.provider, state.model);
   if (!model) return false;
 

@@ -1,9 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { complete, StringEnum, type Message } from "@earendil-works/pi-ai";
+import { complete, StringEnum, type Message, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
+  appendCostEntry,
+  appendTurnEntry,
   applyRoute,
   highestThinkingLevel,
   isRouteName,
@@ -28,6 +30,7 @@ const IMAGE_MEDIA_TYPES: Record<string, string> = {
 const IMAGE_ANALYSIS_SYSTEM_PROMPT = `You are an image analysis assistant for a Pi coding session.
 
 Analyze the supplied image for the parent agent. If it contains text, transcribe the important text exactly. If it is a UI screenshot, identify controls, errors, states, and likely user intent. Be concise, concrete, and say when details are uncertain.`;
+
 
 async function analyzeImageWithRoute(
   ctx: ExtensionContext,
@@ -63,6 +66,7 @@ async function analyzeImageWithRoute(
     timestamp: Date.now(),
   };
 
+  const start = Date.now();
   const response = await complete(
     model,
     { systemPrompt: IMAGE_ANALYSIS_SYSTEM_PROMPT, messages: [message] },
@@ -70,6 +74,29 @@ async function analyzeImageWithRoute(
   );
 
   if (response instanceof Error) throw new Error(`Vision model error: ${response.message}`);
+  const costEntry = {
+    timestamp: response.timestamp ?? Date.now(),
+    mode: "vision",
+    provider: response.provider ?? model.provider,
+    model: response.model ?? model.id,
+    inputTokens: response.usage?.input ?? 0,
+    outputTokens: response.usage?.output ?? 0,
+    cost: response.usage?.cost?.total ?? 0,
+  };
+  appendCostEntry(costEntry);
+  appendTurnEntry(ctx.cwd, {
+    turnId: response.responseId ?? `${costEntry.timestamp}-vision`,
+    timestamp: costEntry.timestamp,
+    provider: costEntry.provider,
+    model: costEntry.model,
+    route: "vision",
+    thinkingLevel: route.thinkingLevel ?? highestThinkingLevel(model),
+    promptTokens: costEntry.inputTokens,
+    completionTokens: costEntry.outputTokens,
+    durationMs: Math.max(0, Date.now() - start),
+    autoRouted: true,
+    cost: costEntry.cost,
+  });
   if (response.errorMessage) {
     throw new Error(`Vision model returned error: ${response.errorMessage}`);
   }
@@ -90,6 +117,21 @@ async function analyzeImageWithRoute(
 
 export default function routingExtension(pi: ExtensionAPI) {
   let config = loadConfig();
+  let pendingModelReassert:
+    | { provider: string; model: string; thinkingLevel?: ModelThinkingLevel; routeName?: RouteName }
+    | undefined;
+
+  pi.on("agent_end", async (_event, ctx) => {
+    if (!pendingModelReassert) return;
+    const target = pendingModelReassert;
+    pendingModelReassert = undefined;
+    const model = ctx.modelRegistry.find(target.provider, target.model);
+    if (!model) return;
+    if (await pi.setModel(model)) {
+      pi.setThinkingLevel(target.thinkingLevel ?? highestThinkingLevel(model));
+      setStatus(ctx, "route", target.routeName ? `route:${target.routeName}` : undefined);
+    }
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     config = withConfig(ctx);
@@ -129,7 +171,7 @@ export default function routingExtension(pi: ExtensionAPI) {
         params.prompt ?? "",
         signal,
       );
-      return { content: [{ type: "text", text }] };
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 
@@ -139,10 +181,9 @@ export default function routingExtension(pi: ExtensionAPI) {
     description:
       "Task-aware model router. List, switch to, or restore from hidden task profiles such as vision, handoff, search, review, oracle, and librarian. Use before tasks that need specific capabilities, especially image understanding.",
     promptSnippet:
-      "Use task_model to switch inline before specialized work: vision/look-at/image for images; handoff for context transfer; search for retrieval; review for code review; oracle for hard planning; librarian for external docs/dependency research. Respect routing disabled state.",
+      "Use task_model to switch inline before specialized work: handoff for context transfer; search for retrieval; review for code review; oracle for hard planning; librarian for external docs/dependency research. Restore after each task. For images/screenshots, prefer analyze_media — it calls vision inline without a turn switch. Respect routing disabled state.",
     promptGuidelines: [
-      "Use task_model with action='switch' and task='vision' before analyzing image paths or screenshots when the current model may lack vision.",
-      "Use task_model with action='switch' for handoff, search, review, oracle, or librarian tasks when the configured task model better fits the work; use action='restore' after the specialized work when appropriate.",
+      "Use task_model with action='switch' for handoff, search, review, oracle, or librarian tasks when the configured task model better fits the work; use action='restore' after the specialized work when appropriate. For images/screenshots, use analyze_media instead — it calls the vision model inline without requiring a turn switch.",
     ],
     parameters: Type.Object({
       action: StringEnum(["list", "switch", "restore", "status"] as const),
@@ -162,6 +203,7 @@ export default function routingExtension(pi: ExtensionAPI) {
               }`,
             },
           ],
+          details: undefined,
         };
       }
 
@@ -187,13 +229,30 @@ export default function routingExtension(pi: ExtensionAPI) {
               text: `Task routing: ${routingEnabled ? "enabled" : "disabled"}\n${lines.join("\n")}`,
             },
           ],
+          details: undefined,
         };
       }
 
       if (params.action === "restore") {
+        const previous = config.routing?.previous;
+        const fallbackMode = config.activeMode ?? "smart";
+        const fallback = config.modes?.[fallbackMode];
         const ok = await restoreRoute(ctx, pi, config);
         if (!ok) throw new Error("Could not restore previous/main model.");
-        return { content: [{ type: "text", text: "Restored previous/main model." }] };
+        const target =
+          previous?.provider && previous.model
+            ? previous
+            : fallback?.provider && fallback.model
+              ? fallback
+              : undefined;
+        pendingModelReassert = target?.provider && target.model
+          ? {
+              provider: target.provider,
+              model: target.model,
+              thinkingLevel: target.thinkingLevel,
+            }
+          : undefined;
+        return { content: [{ type: "text", text: "Restored previous/main model." }], details: undefined };
       }
 
       const task = params.task as RouteName | undefined;
@@ -216,14 +275,21 @@ export default function routingExtension(pi: ExtensionAPI) {
       const restoreHint = route.restore ? " Restore after the specialized task if appropriate." : "";
       const ok = await applyRoute(ctx, pi, config, task);
       if (!ok) throw new Error(`Failed to switch to ${task}: ${route.provider}/${route.model}`);
+      pendingModelReassert = {
+        provider: route.provider,
+        model: route.model,
+        thinkingLevel: route.thinkingLevel ?? thinkingLevel,
+        routeName: task,
+      };
 
       return {
         content: [
           {
             type: "text",
-            text: `Switched to ${task}: ${route.provider}/${route.model} · thinking:${thinkingLevel}.${restoreHint}`,
+            text: `Switched to ${task}: ${route.provider}/${route.model} · thinking:${thinkingLevel}. IMPORTANT: pi model changes made from a tool take effect on the next user turn, not the current running turn. Stop now and ask the user to continue, or wait for the next user prompt before doing the specialized work.${restoreHint}`,
           },
         ],
+        details: undefined,
       };
     },
   });
