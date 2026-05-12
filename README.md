@@ -1,6 +1,6 @@
 # pi-mode
 
-[Amp](https://ampcode.com/models) style Rush/smart/deep model mode switching for [Pi](https://github.com/badlogic/pi-mono).
+[Amp](https://ampcode.com/models) style Rush/smart/deep model mode switching for [Pi](https://github.com/earendil-works/pi).
 
 ## Installation
 
