@@ -23,19 +23,6 @@ export type CostEntry = {
   cost: number;
 };
 
-export type TurnEntry = {
-  turnId: string;
-  timestamp: number;
-  provider: string;
-  model: string;
-  thinkingLevel: ModelThinkingLevel;
-  promptTokens: number;
-  completionTokens: number;
-  durationMs: number;
-  autoRouted: boolean;
-  cost: number;
-};
-
 export type Config = {
   activeMode?: ModeName;
   modes?: Partial<Record<ModeName, Partial<ModeState>>>;
@@ -81,7 +68,8 @@ function saveConfig(config: Config) {
     throw new Error(`Refusing to overwrite unreadable settings.json: ${settingsReadError}`);
   }
 
-  settings.mode = config;
+  settings.modus = config;
+  delete settings.mode;
   writeFileSync(SETTINGS_PATH, `${JSON.stringify(settings, null, 2)}\n`);
 }
 
@@ -108,44 +96,6 @@ export function activeCostBucket(config: Config, model: { provider: string; id: 
 export function appendCostEntry(entry: CostEntry): void {
   mkdirSync(dirname(COST_LOG_PATH), { recursive: true });
   appendFileSync(COST_LOG_PATH, `${JSON.stringify(entry)}\n`);
-}
-
-function jsonlDate(timestamp = Date.now()): string {
-  return new Date(timestamp).toISOString().slice(0, 10);
-}
-
-export function turnLogPath(cwd: string, timestamp = Date.now()): string {
-  return join(cwd, ".pi-agent", `session-${jsonlDate(timestamp)}.jsonl`);
-}
-
-export function appendTurnEntry(cwd: string, entry: TurnEntry): void {
-  const path = turnLogPath(cwd, entry.timestamp);
-  mkdirSync(dirname(path), { recursive: true });
-  appendFileSync(path, `${JSON.stringify(entry)}\n`);
-}
-
-export function readTurnLog(cwd: string, timestamp = Date.now()): TurnEntry[] {
-  const path = turnLogPath(cwd, timestamp);
-  if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split(/\n+/)
-    .filter(Boolean)
-    .flatMap((line) => {
-      try {
-        return [JSON.parse(line) as TurnEntry];
-      } catch {
-        return [];
-      }
-    });
-}
-
-export function formatTurnLog(entries: TurnEntry[]): string {
-  return entries
-    .map((entry) => {
-      const time = new Date(entry.timestamp).toLocaleTimeString();
-      return `${time} ${entry.provider}/${entry.model} thinking:${entry.thinkingLevel} ${costLabel(entry.cost)} (${entry.promptTokens}→${entry.completionTokens}, ${entry.durationMs}ms)`;
-    })
-    .join("\n");
 }
 
 export function readCostLog(): CostEntry[] {
@@ -185,7 +135,7 @@ export function summarizeCosts(entries: CostEntry[]): string {
 
 export function loadConfig(): Config {
   const settings = readSettings();
-  const config = settings.mode;
+  const config = settings.modus ?? settings.mode;
   return config && typeof config === "object" ? (config as Config) : {};
 }
 
@@ -194,7 +144,7 @@ export function persistConfig(ctx: ExtensionContext, config: Config): boolean {
     saveConfig(config);
     return true;
   } catch (error) {
-    notify(ctx, `Could not save mode settings: ${formatError(error)}`, "error");
+    notify(ctx, `Could not save modus settings: ${formatError(error)}`, "error");
     return false;
   }
 }
@@ -296,7 +246,7 @@ export async function applyMode(
   pi.setThinkingLevel(defaultThinkingLevel(ctx, config, modeName));
   config.activeMode = modeName;
   persistConfig(ctx, config);
-  setStatus(ctx, "mode", `mode:${modeName}`);
+  setStatus(ctx, "modus", `modus:${modeName}`);
   notify(ctx, `Mode: ${modeLine(ctx, config, modeName)}`, "info");
   return true;
 }

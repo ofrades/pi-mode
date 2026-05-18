@@ -1,11 +1,11 @@
-# pi-mode
+# pi-modus
 
 [Amp](https://ampcode.com/models) style Rush/smart/deep model mode switching for [Pi](https://github.com/earendil-works/pi).
 
 ## Installation
 
 ```bash
-pi install git:github.com/ofrades/pi-mode
+pi install git:github.com/ofrades/pi-modus
 ```
 
 ## Concepts
@@ -22,17 +22,16 @@ Each mode stores a `provider`, `model`, and `thinkingLevel`. Cycling with `Ctrl+
 
 ## Commands
 
-### `/mode`
+### `/modus`
 
-Opens the interactive mode selector.
+Opens the interactive modus selector.
 
 ```
-/mode              # open selector UI
-/mode rush         # switch directly to rush
-/mode smart        # switch directly to smart
-/mode deep         # switch directly to deep
-/mode cost         # show session and 7-day cost summary
-/mode log [N]      # show last N turn logs (default 10)
+/modus              # open selector UI
+/modus rush         # switch directly to rush
+/modus smart        # switch directly to smart
+/modus deep         # switch directly to deep
+/modus cost         # show session and 7-day cost summary
 ```
 
 Inside the selector:
@@ -53,7 +52,7 @@ Config is stored in `settings.json` under the agent directory:
 
 ```json
 {
-  "mode": {
+  "modus": {
     "activeMode": "smart",
     "modes": {
       "rush":  { "provider": "anthropic",    "model": "claude-haiku-4.5",   "thinkingLevel": "medium" },

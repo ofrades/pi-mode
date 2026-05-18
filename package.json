@@ -1,25 +1,26 @@
 {
-  "name": "pi-mode",
+  "name": "pi-modus",
   "version": "1.0.0",
   "type": "module",
-  "description": "Rush/smart/deep model mode switching for pi.",
+  "description": "Rush/smart/deep model presets for pi.",
   "keywords": [
     "pi-package",
     "pi",
     "pi-extension",
+    "modus",
     "mode",
     "model-switching",
     "coding-agent"
   ],
   "license": "MIT",
   "author": "ofrades",
-  "homepage": "https://github.com/ofrades/pi-mode#readme",
+  "homepage": "https://github.com/ofrades/pi-modus#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ofrades/pi-mode.git"
+    "url": "git+https://github.com/ofrades/pi-modus.git"
   },
   "bugs": {
-    "url": "https://github.com/ofrades/pi-mode/issues"
+    "url": "https://github.com/ofrades/pi-modus/issues"
   },
   "engines": {
     "node": ">=22"
@@ -29,7 +30,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/pi-mode.ts"
+      "./extensions/pi-modus.ts"
     ]
   },
   "files": [

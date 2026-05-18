@@ -9,10 +9,8 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {
   activeCostBucket,
   appendCostEntry,
-  appendTurnEntry,
   applyMode,
   costLabel,
-  formatTurnLog,
   defaultThinkingLevel,
   isModeName,
   loadConfig,
@@ -22,7 +20,6 @@ import {
   notify,
   persistConfig,
   readCostLog,
-  readTurnLog,
   setStatus,
   summarizeCosts,
   supportedThinkingLevels,
@@ -30,7 +27,6 @@ import {
   type Config,
   type CostEntry,
   type ModeName,
-  type TurnEntry,
 } from "../src/mode-core.ts";
 
 async function pickThinkingLevel(
@@ -155,8 +151,6 @@ export default function modeExtension(pi: ExtensionAPI) {
   let config = loadConfig();
   let sessionCost = 0;
   let sessionStart = Date.now();
-  let turnSeq = 0;
-  const assistantStarts: number[] = [];
   const sessionEntries: CostEntry[] = [];
 
   function currentSessionEntries(): CostEntry[] {
@@ -167,8 +161,8 @@ export default function modeExtension(pi: ExtensionAPI) {
     sessionCost = currentSessionEntries().reduce((sum, entry) => sum + entry.cost, 0);
     setStatus(
       ctx,
-      "mode",
-      `mode:${config.activeMode ?? modeForModel(config, ctx.model) ?? "custom"} · ${costLabel(sessionCost)}`,
+      "modus",
+      `modus:${config.activeMode ?? modeForModel(config, ctx.model) ?? "custom"} · ${costLabel(sessionCost)}`,
     );
   }
 
@@ -181,18 +175,9 @@ export default function modeExtension(pi: ExtensionAPI) {
     updateModeStatus(ctx);
   });
 
-  pi.on("message_start", async (event) => {
-    const message = event.message as any;
-    if (message.role === "assistant") {
-      assistantStarts.push(Date.now());
-    }
-  });
-
   pi.on("message_end", async (event, ctx) => {
     const message = event.message as any;
     if (message.role !== "assistant" || !message.usage) return;
-    const start = assistantStarts.shift() ?? message.timestamp ?? Date.now();
-
     const currentConfig = loadConfig();
     const entry: CostEntry = {
       timestamp: message.timestamp ?? Date.now(),
@@ -207,19 +192,6 @@ export default function modeExtension(pi: ExtensionAPI) {
     sessionEntries.push(entry);
     appendCostEntry(entry);
 
-    const turn: TurnEntry = {
-      turnId: message.id ?? `${entry.timestamp}-${++turnSeq}`,
-      timestamp: entry.timestamp,
-      provider: entry.provider,
-      model: entry.model,
-      thinkingLevel: pi.getThinkingLevel(),
-      promptTokens: entry.inputTokens,
-      completionTokens: entry.outputTokens,
-      durationMs: Math.max(0, Date.now() - start),
-      autoRouted: false,
-      cost: entry.cost,
-    };
-    appendTurnEntry(ctx.cwd, turn);
     updateModeStatus(ctx);
   });
 
@@ -238,32 +210,19 @@ export default function modeExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("mode", {
-    description: "Select or configure rush/smart/deep mode",
+  pi.registerCommand("modus", {
+    description: "Select or configure rush/smart/deep modus",
     getArgumentCompletions: (prefix) => {
       const trimmed = prefix.trimStart();
       const [first = ""] = trimmed.split(/\s+/);
 
-      if (first === "log" && /\s/.test(trimmed)) {
-        return ["5", "10", "25", "50"]
-          .filter((value) => value.startsWith(first))
-          .map((value) => ({ value: `log ${value}`, label: value }));
-      }
-
-      return [...MODE_ORDER, "cost", "log"]
+      return [...MODE_ORDER, "cost"]
         .filter((name) => name.startsWith(first))
         .map((name) => ({ value: name, label: name }));
     },
     handler: async (args, ctx) => {
       config = withConfig(ctx);
-      const [firstArg, secondArg] = args.trim().split(/\s+/);
-
-      if (firstArg === "log") {
-        const limit = Math.max(1, Number.parseInt(secondArg || "10", 10) || 10);
-        const turns = readTurnLog(ctx.cwd).slice(-limit);
-        notify(ctx, `Mode turn log (${turns.length})\n${formatTurnLog(turns) || "No turns logged today."}`, "info");
-        return;
-      }
+      const [firstArg] = args.trim().split(/\s+/);
 
       if (firstArg === "cost") {
         const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
@@ -272,7 +231,7 @@ export default function modeExtension(pi: ExtensionAPI) {
         const rolling = allEntries.filter((entry) => entry.timestamp >= sevenDaysAgo);
         notify(
           ctx,
-          `Mode cost\nSession: ${costLabel(session.reduce((sum, entry) => sum + entry.cost, 0))}\n${summarizeCosts(session) || "No session cost yet."}\n\n7-day: ${costLabel(rolling.reduce((sum, entry) => sum + entry.cost, 0))}\n${summarizeCosts(rolling) || "No cost in the last 7 days."}`,
+          `Modus cost\nSession: ${costLabel(session.reduce((sum, entry) => sum + entry.cost, 0))}\n${summarizeCosts(session) || "No session cost yet."}\n\n7-day: ${costLabel(rolling.reduce((sum, entry) => sum + entry.cost, 0))}\n${summarizeCosts(rolling) || "No cost in the last 7 days."}`,
           "info",
         );
         return;
@@ -282,7 +241,7 @@ export default function modeExtension(pi: ExtensionAPI) {
         if (!isModeName(firstArg)) {
           notify(
             ctx,
-            `Unknown mode "${firstArg}". Use: ${MODE_ORDER.join(", ")}, cost, or log [N].`,
+            `Unknown modus "${firstArg}". Use: ${MODE_ORDER.join(", ")} or cost.`,
             "error",
           );
           return;
