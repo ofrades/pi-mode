@@ -43,7 +43,7 @@ const THINKING_LEVELS_DESC: ModelThinkingLevel[] = [
   "off",
 ];
 
-const SETTINGS_PATH = join(getAgentDir(), "settings.json");
+export const SETTINGS_PATH = join(getAgentDir(), "settings.json");
 export const COST_LOG_PATH = join(getAgentDir(), "cost-log.jsonl");
 
 let settingsReadError: string | undefined;

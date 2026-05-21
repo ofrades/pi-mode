@@ -8,7 +8,6 @@ import {
   createGrepTool,
   createLsTool,
   createReadTool,
-  getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
@@ -17,7 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { appendCostEntry, highestThinkingLevel, notify } from "./mode-core.ts";
+import { appendCostEntry, highestThinkingLevel, notify, SETTINGS_PATH } from "./mode-core.ts";
 
 export type SubagentName = "search" | "vision" | "review" | "oracle" | "librarian";
 
@@ -214,7 +213,7 @@ IMPORTANT: Only your last message is returned to the main agent and displayed to
   },
 };
 
-const SETTINGS_PATH = join(getAgentDir(), "settings.json");
+
 
 function readSettings(): Record<string, unknown> {
   try {
