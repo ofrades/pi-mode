@@ -26,7 +26,8 @@
     "node": ">=22"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types test/*.test.ts"
   },
   "pi": {
     "extensions": [

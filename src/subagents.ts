@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@earendil-works/pi-agent-core";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -16,7 +16,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { appendCostEntry, highestThinkingLevel, notify, SETTINGS_PATH } from "./mode-core.ts";
+import { appendCostEntry, costLabel, highestThinkingLevel, notify, SETTINGS_PATH } from "./mode-core.ts";
 
 export type SubagentName = "search" | "vision" | "review" | "oracle" | "librarian";
 
@@ -298,15 +298,113 @@ function assistantThinkingFromMessage(message: unknown): string {
     .trim();
 }
 
-function formatSubagentContent(text: string, thinking: string): string {
-  if (!text && !thinking) return "";
+type RecentTool = { tool: string; args: string; isError?: boolean };
+
+export type SubagentProgress = {
+  status: string;
+  toolCount: number;
+  tokens: number;
+  cost: number;
+  currentTool?: string;
+  currentToolArgs?: string;
+  recentTools: RecentTool[];
+  recentOutput: string[];
+};
+
+export function createProgress(): SubagentProgress {
+  return { status: "starting", toolCount: 0, tokens: 0, cost: 0, recentTools: [], recentOutput: [] };
+}
+
+function truncateInline(value: string, max = 80): string {
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+export function toolArgsPreview(args: unknown): string {
+  if (!args || typeof args !== "object") return "";
+  const record = args as Record<string, unknown>;
+  for (const key of ["command", "file_path", "path", "pattern", "query", "prompt", "url"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return truncateInline(value.trim(), 70);
+  }
+  try {
+    const json = JSON.stringify(record);
+    return json && json !== "{}" ? truncateInline(json, 70) : "";
+  } catch {
+    return "";
+  }
+}
+
+export function textDeltaFromEvent(event: unknown): string {
+  const assistantEvent = (event as { assistantMessageEvent?: { type?: unknown; delta?: unknown } }).assistantMessageEvent;
+  return assistantEvent?.type === "text_delta" && typeof assistantEvent.delta === "string"
+    ? assistantEvent.delta
+    : "";
+}
+
+const MAX_CAPTURE_BYTES = 64 * 1024;
+
+export function appendBounded(buffer: string, chunk: string): string {
+  const next = `${buffer}${chunk}`;
+  if (next.length <= MAX_CAPTURE_BYTES) return next;
+  const marker = "[truncated]\n";
+  return `${marker}${next.slice(-(MAX_CAPTURE_BYTES - marker.length))}`;
+}
+
+function usageCostTotal(cost: unknown): number {
+  if (typeof cost === "number") return cost;
+  if (cost && typeof cost === "object" && typeof (cost as { total?: unknown }).total === "number") {
+    return (cost as { total: number }).total;
+  }
+  return 0;
+}
+
+export function addMessageUsage(usage: UsageStats, progress: SubagentProgress, message: unknown): void {
+  const msg = message as { role?: unknown; usage?: Record<string, any> };
+  if (msg.role !== "assistant" || !msg.usage || typeof msg.usage !== "object") return;
+  const input = msg.usage.input ?? 0;
+  const output = msg.usage.output ?? 0;
+  const cacheRead = msg.usage.cacheRead ?? 0;
+  const cacheWrite = msg.usage.cacheWrite ?? 0;
+  const contextTokens = msg.usage.totalTokens ?? input + output + cacheRead + cacheWrite;
+  const cost = usageCostTotal(msg.usage.cost);
+
+  usage.input += input;
+  usage.output += output;
+  usage.cacheRead += cacheRead;
+  usage.cacheWrite += cacheWrite;
+  usage.contextTokens = contextTokens;
+  usage.cost += cost;
+  progress.tokens += input + output + cacheWrite;
+  progress.cost += cost;
+}
+
+function updateRecentOutput(progress: SubagentProgress, tail: string): void {
+  progress.recentOutput = tail.split("\n").filter((line) => line.trim()).slice(-8).reverse();
+}
+
+export function formatSubagentContent(text: string, thinking: string, progress?: SubagentProgress): string {
+  if (!text && !thinking && !progress) return "";
   const parts: string[] = [];
+  if (progress) {
+    const statusParts = [progress.status];
+    if (progress.currentTool) {
+      statusParts.push(`${progress.currentTool}${progress.currentToolArgs ? ` ${progress.currentToolArgs}` : ""}`);
+    } else if (progress.recentTools[0]) {
+      const last = progress.recentTools[0];
+      statusParts.push(`${last.isError ? "failed" : "ran"} ${last.tool}${last.args ? ` ${last.args}` : ""}`);
+    }
+    if (progress.toolCount > 0) statusParts.push(`${progress.toolCount} tools`);
+    if (progress.tokens > 0) statusParts.push(`${progress.tokens} tokens`);
+    if (progress.cost > 0) statusParts.push(costLabel(progress.cost));
+    parts.push(statusParts.join(" · "));
+  }
   if (thinking) {
     // Show a snippet of thinking content — models can produce long CoT
     const snippet = thinking.length > 300 ? `${thinking.slice(0, 300)}…` : thinking;
     parts.push(`💭 ${snippet}`);
   }
   if (text) parts.push(text);
+  else if (progress?.recentOutput.length) parts.push(progress.recentOutput.join("\n"));
   return parts.join("\n\n");
 }
 
@@ -322,7 +420,7 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 
 type ImageInput = { type: "image"; data: string; mimeType: string };
 
-type UsageStats = {
+export type UsageStats = {
   input: number;
   output: number;
   cacheRead: number;
@@ -370,26 +468,72 @@ async function runVisionSubagent(
   let latestText = "";
   let latestThinking = "";
   let lastUpdateAt = 0;
+  let recentOutputTail = "";
+  const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+  const progress = createProgress();
+  let stopReason: string | undefined;
+  let errorMessage: string | undefined;
   const modelLabel = `${config.provider}/${config.model}`;
   const emit = (status: string, force = false) => {
+    progress.status = status;
     const now = Date.now();
-    if (!force && now - lastUpdateAt < 250) return;
+    if (!force && now - lastUpdateAt < 150) return;
     lastUpdateAt = now;
     if (ctx.hasUI) ctx.ui.setStatus(`modus-${name}`, `[${name}] ${modelLabel} · ${status}`);
-    const body = formatSubagentContent(latestText, latestThinking);
+    const body = formatSubagentContent(latestText, latestThinking, progress);
     onUpdate?.(body ? `[${name} · ${status}]\n\n${body}` : `[${name} · ${status}]`);
   };
 
-  const unsub = agent.subscribe((event) => {
-    if (event.type === "turn_start") emit("thinking", true);
-    else if (event.type === "message_update") {
-      const text = extractLastAssistantText([event.message]);
+  const unsub = agent.subscribe((event: AgentEvent) => {
+    if (event.type === "agent_start") emit("starting", true);
+    else if (event.type === "turn_start") {
+      usage.turns += 1;
+      emit("thinking", true);
+    } else if (event.type === "message_start") {
+      if ((event.message as { role?: unknown }).role === "assistant") {
+        recentOutputTail = "";
+        progress.recentOutput = [];
+      }
+    } else if (event.type === "message_update") {
+      const delta = textDeltaFromEvent(event);
+      if (delta) {
+        recentOutputTail = `${recentOutputTail}${delta}`.slice(-8192);
+        updateRecentOutput(progress, recentOutputTail);
+      }
+      const text = assistantTextFromMessage(event.message);
       if (text) latestText = text;
       const thinking = assistantThinkingFromMessage(event.message);
       if (thinking) latestThinking = thinking;
+      if ((event.message as { stopReason?: unknown }).stopReason) stopReason = String((event.message as { stopReason: unknown }).stopReason);
+      if ((event.message as { errorMessage?: unknown }).errorMessage) errorMessage = String((event.message as { errorMessage: unknown }).errorMessage);
       emit("responding");
-    } else if (event.type === "tool_execution_start") emit(event.toolName, true);
-    else if (event.type === "tool_execution_end") emit(`${event.toolName} done`, true);
+    } else if (event.type === "message_end") {
+      const text = assistantTextFromMessage(event.message);
+      if (text) latestText = text;
+      const thinking = assistantThinkingFromMessage(event.message);
+      if (thinking) latestThinking = thinking;
+      if ((event.message as { stopReason?: unknown }).stopReason) stopReason = String((event.message as { stopReason: unknown }).stopReason);
+      if ((event.message as { errorMessage?: unknown }).errorMessage) errorMessage = String((event.message as { errorMessage: unknown }).errorMessage);
+      addMessageUsage(usage, progress, event.message);
+      emit("message done", true);
+    } else if (event.type === "tool_execution_start") {
+      progress.toolCount += 1;
+      progress.currentTool = event.toolName;
+      progress.currentToolArgs = toolArgsPreview(event.args);
+      emit(event.toolName, true);
+    } else if (event.type === "tool_execution_end") {
+      progress.recentTools.unshift({ tool: event.toolName, args: progress.currentToolArgs ?? "", isError: event.isError });
+      progress.recentTools = progress.recentTools.slice(0, 5);
+      progress.currentTool = undefined;
+      progress.currentToolArgs = undefined;
+      emit(`${event.toolName} done`, true);
+    } else if (event.type === "turn_end") {
+      emit("turn done", true);
+    } else if (event.type === "agent_end") {
+      const text = extractLastAssistantText(event.messages);
+      if (text) latestText = text;
+      emit("done", true);
+    }
   });
 
   const onAbort = () => agent.abort();
@@ -409,6 +553,22 @@ async function runVisionSubagent(
     notify(ctx, `[${name}] ← done`, "info");
   }
 
+  if (stopReason === "error" || stopReason === "aborted") {
+    throw new Error(errorMessage || `Subagent ${stopReason}`);
+  }
+
+  if (usage.cost > 0) {
+    appendCostEntry({
+      timestamp: Date.now(),
+      mode: name,
+      provider: config.provider,
+      model: config.model,
+      inputTokens: usage.input,
+      outputTokens: usage.output,
+      cost: usage.cost,
+    });
+  }
+
   return extractLastAssistantText(agent.state.messages) || "(no output)";
 }
 
@@ -423,7 +583,12 @@ async function runSubprocessSubagent(
   const modelSpec = modelSpecForSubagent(ctx, config);
   const tmpDir = mkdtempSync(join(tmpdir(), "pi-modus-subagent-"));
   const promptPath = join(tmpDir, `${name}.md`);
-  writeFileSync(promptPath, SUBAGENT_METADATA[name].systemPrompt, { encoding: "utf8", mode: 0o600 });
+  try {
+    writeFileSync(promptPath, SUBAGENT_METADATA[name].systemPrompt, { encoding: "utf8", mode: 0o600 });
+  } catch (error) {
+    rmSync(tmpDir, { recursive: true, force: true });
+    throw error;
+  }
 
   const args = [
     "--mode",
@@ -441,19 +606,23 @@ async function runSubprocessSubagent(
 
   let latestText = "";
   let latestThinking = "";
+  let recentOutputTail = "";
   let stderr = "";
   let nonJsonStdout = "";
   const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 };
+  const progress = createProgress();
   let stopReason: string | undefined;
   let errorMessage: string | undefined;
   let wasAborted = false;
   let lastUpdateAt = 0;
 
   const emit = (status: string, force = false) => {
+    progress.status = status;
     const now = Date.now();
-    if (!force && now - lastUpdateAt < 250) return;
+    if (!force && now - lastUpdateAt < 150) return;
     lastUpdateAt = now;
-    const body = formatSubagentContent(latestText, latestThinking);
+    if (ctx.hasUI) ctx.ui.setStatus(`modus-${name}`, `[${name}] ${config.provider}/${config.model} · ${status}`);
+    const body = formatSubagentContent(latestText, latestThinking, progress);
     onUpdate?.(body ? `[${name} · ${status}]\n\n${body}` : `[${name} · ${status}]`);
   };
 
@@ -472,36 +641,61 @@ async function runSubprocessSubagent(
         try {
           event = JSON.parse(line);
         } catch {
-          const next = `${nonJsonStdout}${line}\n`;
-          nonJsonStdout = next.length > 64 * 1024 ? `${next.slice(-64 * 1024)}\n[truncated]\n` : next;
+          nonJsonStdout = appendBounded(nonJsonStdout, `${line}\n`);
           return;
         }
-        if (event.type === "turn_start") {
+        if (event.type === "agent_start") {
+          emit("starting", true);
+        } else if (event.type === "turn_start") {
           usage.turns += 1;
           emit("thinking");
-        } else if (event.type === "message_update" || event.type === "message_end") {
+        } else if (event.type === "message_start") {
+          if (event.message?.role === "assistant") {
+            recentOutputTail = "";
+            progress.recentOutput = [];
+          }
+        } else if (event.type === "message_update") {
+          const delta = textDeltaFromEvent(event);
+          if (delta) {
+            recentOutputTail = `${recentOutputTail}${delta}`.slice(-8192);
+            updateRecentOutput(progress, recentOutputTail);
+          }
           const text = assistantTextFromMessage(event.message);
           if (text) latestText = text;
           const thinking = assistantThinkingFromMessage(event.message);
           if (thinking) latestThinking = thinking;
           if (event.message?.stopReason) stopReason = event.message.stopReason;
           if (event.message?.errorMessage) errorMessage = event.message.errorMessage;
-          if (event.type === "message_end") {
-            const u = event.message?.usage;
-            if (u && typeof u === "object") {
-              usage.input += u.input ?? 0;
-              usage.output += u.output ?? 0;
-              usage.cacheRead += u.cacheRead ?? 0;
-              usage.cacheWrite += u.cacheWrite ?? 0;
-              usage.contextTokens = u.totalTokens ?? usage.contextTokens;
-              usage.cost += typeof u.cost === "number" ? u.cost : (u.cost?.total ?? 0);
-            }
-          }
           emit("responding");
+        } else if (event.type === "message_end") {
+          const text = assistantTextFromMessage(event.message);
+          if (text) latestText = text;
+          const thinking = assistantThinkingFromMessage(event.message);
+          if (thinking) latestThinking = thinking;
+          if (event.message?.stopReason) stopReason = event.message.stopReason;
+          if (event.message?.errorMessage) errorMessage = event.message.errorMessage;
+          addMessageUsage(usage, progress, event.message);
+          emit("message done", true);
         } else if (event.type === "tool_execution_start") {
-          // Skip per-tool start events to reduce flicker
+          progress.toolCount += 1;
+          progress.currentTool = String(event.toolName ?? "tool");
+          progress.currentToolArgs = toolArgsPreview(event.args);
+          emit(progress.currentTool, true);
         } else if (event.type === "tool_execution_end") {
-          emit(`${String(event.toolName ?? "tool")} done`, true);
+          const toolName = String(event.toolName ?? "tool");
+          progress.recentTools.unshift({ tool: toolName, args: progress.currentToolArgs ?? "", isError: Boolean(event.isError) });
+          progress.recentTools = progress.recentTools.slice(0, 5);
+          progress.currentTool = undefined;
+          progress.currentToolArgs = undefined;
+          emit(`${toolName} done`, true);
+        } else if (event.type === "turn_end") {
+          emit("turn done", true);
+        } else if (event.type === "agent_end") {
+          if (Array.isArray(event.messages)) {
+            const text = extractLastAssistantText(event.messages);
+            if (text) latestText = text;
+          }
+          emit("done", true);
         }
       };
 
@@ -512,7 +706,7 @@ async function runSubprocessSubagent(
         for (const line of lines) processLine(line);
       });
       proc.stderr.on("data", (data) => {
-        stderr += data.toString();
+        stderr = appendBounded(stderr, data.toString());
       });
 
       let settled = false;
@@ -527,7 +721,7 @@ async function runSubprocessSubagent(
         wasAborted = true;
         proc.kill("SIGTERM");
         setTimeout(() => {
-          if (!proc.killed) proc.kill("SIGKILL");
+          if (!settled) proc.kill("SIGKILL");
         }, 5000);
       };
 
@@ -536,7 +730,7 @@ async function runSubprocessSubagent(
         settle(code ?? 0);
       });
       proc.on("error", (err) => {
-        stderr += err instanceof Error ? err.message : String(err);
+        stderr = appendBounded(stderr, err instanceof Error ? err.message : String(err));
         settle(1);
       });
 
@@ -561,6 +755,7 @@ async function runSubprocessSubagent(
 
     return { text: latestText || "(no output)", stderr, nonJsonStdout, exitCode, usage, stopReason, errorMessage };
   } finally {
+    if (ctx.hasUI) ctx.ui.setStatus(`modus-${name}`, undefined);
     rmSync(tmpDir, { recursive: true, force: true });
   }
 }
