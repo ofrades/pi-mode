@@ -87,8 +87,6 @@ Config is stored in `settings.json` under the agent directory:
 }
 ```
 
-**Legacy migration:** if `modus.subagents` is missing but an old `iuvate.routes` config exists, `pi-modus` will read those routes automatically.
-
 ## Notes
 
 - `thinkingLevel` defaults to the highest level supported by the configured model if not explicitly set.

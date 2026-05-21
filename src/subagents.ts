@@ -229,17 +229,7 @@ function readModusSettings(): ModusSettings {
 }
 
 export function loadSubagentsConfig(): SubagentsConfig {
-  const settings = readSettings();
-  const modusSubagents = readModusSettings().subagents;
-  if (modusSubagents) return modusSubagents;
-
-  const legacy = settings.iuvate;
-  if (legacy && typeof legacy === "object") {
-    const routes = (legacy as { routes?: unknown }).routes;
-    if (routes && typeof routes === "object") return routes as SubagentsConfig;
-  }
-
-  return {};
+  return readModusSettings().subagents ?? {};
 }
 
 export function persistSubagentsConfig(ctx: ExtensionContext, subagents: SubagentsConfig): void {
