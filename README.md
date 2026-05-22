@@ -63,28 +63,49 @@ Inside the selector:
 
 Cycles forward through `rush → smart → deep → rush`.
 
-## Configuration
+## Amp models
+
+```
+Modes:
+- Rush: gpt-5.5, no reasoning
+- Smart: claude-opus-4.7
+- Deep: gpt-5.5, medium reasoning
+
+Subagents:
+ - Review: gemini 3.1-pro
+ - Search: gemini 3-flash
+ - Oracle: gpt-5.4, medium reasoning
+ - Librarian: claude-sonnet-4.6
+
+Tool:
+ - Vision: gemini-3-flash
+```
+
+# Configuration
 
 Config is stored in `settings.json` under the agent directory:
 
-```json
+These are cost-effective opencode-go models. Swap to the Amp equivalents if you prefer.
+
+```jsonc
 {
   "modus": {
     "activeMode": "smart",
     "modes": {
-      "rush":  { "provider": "openai",    "model": "gpt-5.5-mini",       "thinkingLevel": "off" },
-      "smart": { "provider": "anthropic", "model": "claude-sonnet-4.6",  "thinkingLevel": "medium" },
-      "deep":  { "provider": "openai",    "model": "gpt-5.5",            "thinkingLevel": "high" }
+      "rush":  { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinkingLevel": "off" },
+      "smart": { "provider": "opencode-go", "model": "kimi-k2.6", "thinkingLevel": "medium" },
+      "deep":  { "provider": "opencode-go", "model": "deepseek-v4-pro", "thinkingLevel": "medium" }
     },
     "subagents": {
-      "oracle":    { "provider": "openai",      "model": "gpt-5.5",          "thinkingLevel": "high" },
-      "review":    { "provider": "anthropic",   "model": "claude-sonnet-4.6" },
-      "search":    { "provider": "openai",      "model": "gpt-5.5-mini",     "thinkingLevel": "off" },
-      "librarian": { "provider": "anthropic",   "model": "claude-sonnet-4.6" },
-      "vision":    { "provider": "opencode",    "model": "gemini-3.1-pro" }
+      "review":    { "provider": "opencode-go", "model": "deepseek-v4-pro" },
+      "search":    { "provider": "opencode-go", "model": "deepseek-v4-flash", "thinkingLevel": "off" },
+      "oracle":    { "provider": "opencode-go", "model": "kimi-k2.5", "thinkingLevel": "medium" },
+      "librarian": { "provider": "opencode-go", "model": "kimi-k2.5" },
+      "vision":    { "provider": "opencode-go", "model": "kimi-k2.5" } 
     }
   }
 }
+
 ```
 
 ## Notes
